@@ -210,5 +210,243 @@ def status(ctx, order_id, symbol):
         click.echo(f"Error: {str(e)}", err=True)
         sys.exit(1)
 
+@cli.command()
+@click.option('--symbol', '-s', help='Filter by trading symbol')
+@click.option('--status', '-t', type=click.Choice(['open', 'closed', 'all']), default='open', help='Order status filter')
+@click.option('--format', '-f', type=click.Choice(['table', 'json']), default='table', help='Output format')
+@click.pass_context
+def orders(ctx, symbol, status, format):
+    """List orders"""
+    client = ctx.obj['client']
+    try:
+        orders_list = client.list_orders(symbol, status)
+        
+        if not orders_list:
+            click.echo("No orders found.")
+            return
+        
+        if format == 'json':
+            click.echo(json.dumps(orders_list, indent=2))
+        else:
+            # Format as table
+            headers = ['ID', 'Symbol', 'Type', 'Side', 'Amount', 'Filled', 'Price', 'Status', 'Created']
+            rows = []
+            for order in orders_list:
+                rows.append([
+                    order['id'][:8] + '...',
+                    order['symbol'],
+                    order['type'],
+                    order['side'],
+                    f"{order['amount']:.4f}",
+                    f"{order['filled']:.4f}",
+                    f"{order.get('price', 'N/A')}",
+                    order['status'],
+                    datetime.fromtimestamp(order['timestamp']/1000).strftime('%Y-%m-%d %H:%M:%S')
+                ])
+            click.echo(tabulate(rows, headers=headers, tablefmt='grid'))
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
+        sys.exit(1)
+
+@cli.command()
+@click.option('--format', '-f', type=click.Choice(['table', 'json']), default='table', help='Output format')
+@click.pass_context
+def positions(ctx, format):
+    """Show open positions"""
+    client = ctx.obj['client']
+    try:
+        positions_list = client.get_positions()
+        
+        # Filter only open positions
+        open_positions = [p for p in positions_list if p['contracts'] != 0]
+        
+        if not open_positions:
+            click.echo("No open positions found.")
+            return
+        
+        if format == 'json':
+            click.echo(json.dumps(open_positions, indent=2))
+        else:
+            # Format as table
+            headers = ['Symbol', 'Side', 'Contracts', 'Avg Price', 'Mark Price', 'PnL', 'PnL %', 'Margin']
+            rows = []
+            for pos in open_positions:
+                rows.append([
+                    pos['symbol'],
+                    pos['side'],
+                    f"{pos['contracts']:.4f}",
+                    f"{pos.get('averagePrice', 'N/A')}",
+                    f"{pos.get('markPrice', 'N/A')}",
+                    f"{pos.get('unrealizedPnl', 0):.2f}",
+                    f"{pos.get('percentage', 0):.2f}%",
+                    f"{pos.get('initialMargin', 0):.2f}"
+                ])
+            click.echo(tabulate(rows, headers=headers, tablefmt='grid'))
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
+        sys.exit(1)
+
+@cli.command()
+@click.option('--symbol', '-s', required=True, help='Position symbol to close')
+@click.option('--confirm', '-y', is_flag=True, help='Skip confirmation prompt')
+@click.pass_context
+def close(ctx, symbol, confirm):
+    """Close an open position"""
+    client = ctx.obj['client']
+    try:
+        # Get current position info
+        positions = client.get_positions()
+        position = next((p for p in positions if p['symbol'] == symbol and p['contracts'] != 0), None)
+        
+        if not position:
+            click.echo(f"No open position found for {symbol}")
+            return
+        
+        # Show position details
+        click.echo(f"Position to close:")
+        click.echo(f"Symbol: {position['symbol']}")
+        click.echo(f"Side: {position['side']}")
+        click.echo(f"Contracts: {position['contracts']}")
+        click.echo(f"Unrealized PnL: {position.get('unrealizedPnl', 0):.2f}")
+        
+        if not confirm:
+            if not click.confirm("Are you sure you want to close this position?"):
+                click.echo("Cancelled.")
+                return
+        
+        # Close the position
+        order = client.close_position(symbol)
+        click.echo(f"Position closed successfully!")
+        click.echo(f"Order ID: {order['id']}")
+        click.echo(f"Status: {order['status']}")
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
+        sys.exit(1)
+
+@cli.command()
+@click.option('--symbol', '-s', required=True, help='Trading symbol (e.g., BTC/USDT)')
+@click.option('--format', '-f', type=click.Choice(['table', 'json']), default='table', help='Output format')
+@click.pass_context
+def get_open_orders(ctx, symbol, format):
+    """Get open orders for a specific symbol"""
+    client = ctx.obj['client']
+    try:
+        orders_list = client.get_open_orders(symbol)
+        
+        if not orders_list:
+            click.echo(f"No open orders found for {symbol}")
+            return
+        
+        if format == 'json':
+            click.echo(json.dumps(orders_list, indent=2))
+        else:
+            # Format as table
+            headers = ['ID', 'Type', 'Side', 'Amount', 'Filled', 'Price', 'Status', 'Created']
+            rows = []
+            for order in orders_list:
+                rows.append([
+                    order['id'][:12] + '...' if len(order['id']) > 12 else order['id'],
+                    order['type'],
+                    order['side'],
+                    f"{order['amount']:.4f}",
+                    f"{order['filled']:.4f}",
+                    f"{order.get('price', 'N/A')}",
+                    order['status'],
+                    datetime.fromtimestamp(order['timestamp']/1000).strftime('%Y-%m-%d %H:%M:%S')
+                ])
+            click.echo(tabulate(rows, headers=headers, tablefmt='grid'))
+            click.echo(f"\nTotal open orders: {len(orders_list)}")
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
+        sys.exit(1)
+
+@cli.command()
+@click.option('--active', '-a', is_flag=True, help='Show only active markets')
+@click.option('--type', '-t', type=click.Choice(['spot', 'swap', 'future']), help='Filter by market type')
+@click.option('--quote', '-q', help='Filter by quote currency (e.g., USDT)')
+@click.option('--format', '-f', type=click.Choice(['table', 'json']), default='table', help='Output format')
+@click.pass_context
+def markets(ctx, active, type, quote, format):
+    """List available markets"""
+    client = ctx.obj['client']
+    try:
+        markets_list = client.list_markets()
+        
+        # Apply filters
+        if active:
+            markets_list = [m for m in markets_list if m.get('active', True)]
+        if type:
+            markets_list = [m for m in markets_list if m.get('type') == type]
+        if quote:
+            markets_list = [m for m in markets_list if m.get('quote') == quote]
+        
+        if not markets_list:
+            click.echo("No markets found matching the criteria.")
+            return
+        
+        if format == 'json':
+            click.echo(json.dumps(markets_list, indent=2))
+        else:
+            # Format as table
+            headers = ['Symbol', 'Type', 'Base', 'Quote', 'Active', 'Min Amount', 'Min Cost']
+            rows = []
+            for market in markets_list[:50]:  # Limit to 50 for readability
+                rows.append([
+                    market['symbol'],
+                    market.get('type', 'N/A'),
+                    market.get('base', 'N/A'),
+                    market.get('quote', 'N/A'),
+                    '✓' if market.get('active', True) else '✗',
+                    f"{market.get('limits', {}).get('amount', {}).get('min', 'N/A')}",
+                    f"{market.get('limits', {}).get('cost', {}).get('min', 'N/A')}"
+                ])
+            click.echo(tabulate(rows, headers=headers, tablefmt='grid'))
+            if len(markets_list) > 50:
+                click.echo(f"\n... and {len(markets_list) - 50} more markets")
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
+        sys.exit(1)
+
+# Additional utility commands
+@cli.command()
+@click.pass_context
+def info(ctx):
+    """Show exchange information"""
+    client = ctx.obj['client']
+    try:
+        exchange = client.exchange
+        click.echo(f"Exchange: {exchange.name}")
+        click.echo(f"Version: {exchange.version}")
+        click.echo(f"Rate Limit: {'Enabled' if exchange.enableRateLimit else 'Disabled'}")
+        click.echo(f"Has CORS: {exchange.has.get('CORS', False)}")
+        click.echo(f"Has Public API: {exchange.has.get('publicAPI', False)}")
+        click.echo(f"Has Private API: {exchange.has.get('privateAPI', False)}")
+        
+        # Show available features
+        click.echo("\nAvailable Features:")
+        features = [
+            ('Fetch Ticker', 'fetchTicker'),
+            ('Fetch Tickers', 'fetchTickers'),
+            ('Fetch Order Book', 'fetchOrderBook'),
+            ('Fetch Trades', 'fetchTrades'),
+            ('Fetch OHLCV', 'fetchOHLCV'),
+            ('Create Order', 'createOrder'),
+            ('Cancel Order', 'cancelOrder'),
+            ('Fetch Orders', 'fetchOrders'),
+            ('Fetch Open Orders', 'fetchOpenOrders'),
+            ('Fetch Closed Orders', 'fetchClosedOrders'),
+            ('Fetch Positions', 'fetchPositions'),
+            ('Fetch Balance', 'fetchBalance'),
+        ]
+        
+        for name, key in features:
+            supported = exchange.has.get(key, False)
+            status = '✓' if supported else '✗'
+            click.echo(f"  {status} {name}")
+            
+    except Exception as e:
+        click.echo(f"Error: {str(e)}", err=True)
+        sys.exit(1)
+
 if __name__ == '__main__':
     cli()
